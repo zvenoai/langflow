@@ -11,7 +11,10 @@ class TelegramWebhook(Component):
     """Компонент для приема и парсинга обновлений от Telegram через webhook."""
 
     display_name = "Telegram Webhook"
-    description = "Принимает и парсит входящие обновления от Telegram Bot API через webhook. Используйте как входную точку в вашем потоке."
+    description = (
+        "Принимает и парсит входящие обновления от Telegram Bot API через webhook. "
+        "Используйте как входную точку в вашем потоке."
+    )
     documentation: str = "https://core.telegram.org/bots/api#update"
     icon = "Webhook"
     name = "TelegramWebhook"
@@ -27,7 +30,10 @@ class TelegramWebhook(Component):
         MultilineInput(
             name="data",
             display_name="Данные",
-            info="Получает данные webhook от Telegram через HTTP POST. Автоматически заполняется при использовании с webhook endpoint Langflow.",
+            info=(
+                "Получает данные webhook от Telegram через HTTP POST. "
+                "Автоматически заполняется при использовании с webhook endpoint Langflow."
+            ),
             input_types=["Data"],
             advanced=True,
         ),
@@ -84,17 +90,14 @@ class TelegramWebhook(Component):
         update = {}
 
         try:
-            # Если данные пришли из компонента Webhook или API (Data объект)
-            if hasattr(raw_data, "data"):
-                payload = raw_data.data
-            else:
-                payload = raw_data
+            payload = raw_data.data if hasattr(raw_data, "data") else raw_data
 
             if isinstance(payload, dict):
                 update = payload
             elif isinstance(payload, str):
-                update = json.loads(payload.replace('"\n"', '"\\n"') or "{}")
-        except Exception as e:
+                safe_payload = payload.replace('"\n"', '"\\n"') or "{}"
+                update = json.loads(safe_payload)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
             logger.error(f"Ошибка парсинга Telegram update: {e}")
             self.status = f"Ошибка парсинга: {e}"
             return {}
