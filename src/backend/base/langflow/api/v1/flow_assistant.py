@@ -11,7 +11,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from lfx.log.logger import logger
-from openai import OpenAI
+from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from langflow.api.utils import CurrentActiveUser
@@ -597,7 +597,7 @@ async def flow_assistant_chat(
     model = request.model or os.getenv("LANGFLOW_FLOW_ASSISTANT_MODEL", "")
     if not model:
         raise HTTPException(status_code=400, detail="Model is required. Pick a model from /flow-assistant/models.")
-    client = OpenAI(api_key=api_key, base_url=QUERYROUTER_BASE_URL)
+    client = AsyncOpenAI(api_key=api_key, base_url=QUERYROUTER_BASE_URL)
 
     tools = _build_openai_tools()
     messages = _build_openai_messages(flow_id=request.flow_id, message=request.message, history=request.history)
@@ -607,98 +607,101 @@ async def flow_assistant_chat(
     max_iterations = _get_max_iterations()
     iteration = 0
 
-    while True:
-        iteration += 1
-        if max_iterations > 0 and iteration > max_iterations:
-            break
+    try:
+        while True:
+            iteration += 1
+            if max_iterations > 0 and iteration > max_iterations:
+                break
 
-        try:
-            extra_body: dict[str, Any] = {}
-            if is_reasoning:
-                extra_body["include_reasoning"] = True
+            try:
+                extra_body: dict[str, Any] = {}
+                if is_reasoning:
+                    extra_body["include_reasoning"] = True
 
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.2,
-                extra_body=extra_body if extra_body else None,
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.2,
+                    extra_body=extra_body if extra_body else None,
+                )
+            except Exception as exc:
+                await logger.aerror(f"Flow assistant LLM error: {exc!s}")
+                raise HTTPException(status_code=500, detail="LLM request failed") from exc
+
+            msg = resp.choices[0].message
+            msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else {}
+            reasoning_details = msg_dict.get("reasoning_details")
+
+            if msg.tool_calls:
+                tool_calls_payload: list[dict[str, Any]] = []
+                for tc in msg.tool_calls:
+                    tc_dump = tc.model_dump() if hasattr(tc, "model_dump") else {}
+                    tool_calls_payload.append(tc_dump)
+                _ensure_tool_call_ids(tool_calls_payload)
+
+                assistant_message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": tool_calls_payload,
+                }
+                if reasoning_details:
+                    assistant_message["reasoning_details"] = reasoning_details
+                messages.append(assistant_message)
+
+                for idx, tc in enumerate(msg.tool_calls):
+                    fn = tc.function
+                    tool_name = fn.name
+                    tool_args_raw = fn.arguments or "{}"
+                    try:
+                        tool_args = json.loads(tool_args_raw)
+                    except Exception:  # noqa: BLE001
+                        tool_args = {}
+                    tool_args = _maybe_inject_flow_id(tool_name=tool_name, tool_args=tool_args, flow_id=request.flow_id)
+
+                    tool_error: str | None = None
+                    tool_result_text: str | None = None
+
+                    try:
+                        tool_result = await call_workflow_tool(
+                            tool_name=tool_name,
+                            arguments=tool_args,
+                            user_id=current_user.id,
+                        )
+                        tool_result_text = "\n".join([c.text for c in tool_result if getattr(c, "text", None)])
+                    except WorkflowEditError as exc:
+                        tool_error = str(exc)
+                        tool_result_text = f"ERROR: {exc}"
+                    except Exception as exc:  # noqa: BLE001
+                        tool_error = str(exc)
+                        tool_result_text = f"ERROR: {exc}"
+
+                    tool_calls_log.append(
+                        ToolCallDetail(
+                            name=tool_name,
+                            arguments=tool_args,
+                            result=tool_result_text if not tool_error else None,
+                            error=tool_error,
+                        )
+                    )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_calls_payload[idx]["id"],
+                            "content": tool_result_text,
+                        }
+                    )
+                continue
+
+            final_text = msg.content or ""
+            return FlowAssistantChatResponse(
+                message=final_text,
+                tool_calls=tool_calls_log,
             )
-        except Exception as exc:
-            await logger.aerror(f"Flow assistant LLM error: {exc!s}")
-            raise HTTPException(status_code=500, detail="LLM request failed") from exc
-
-        msg = resp.choices[0].message
-        msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else {}
-        reasoning_details = msg_dict.get("reasoning_details")
-
-        if msg.tool_calls:
-            tool_calls_payload: list[dict[str, Any]] = []
-            for tc in msg.tool_calls:
-                tc_dump = tc.model_dump() if hasattr(tc, "model_dump") else {}
-                tool_calls_payload.append(tc_dump)
-            _ensure_tool_call_ids(tool_calls_payload)
-
-            assistant_message: dict[str, Any] = {
-                "role": "assistant",
-                "content": msg.content or "",
-                "tool_calls": tool_calls_payload,
-            }
-            if reasoning_details:
-                assistant_message["reasoning_details"] = reasoning_details
-            messages.append(assistant_message)
-
-            for idx, tc in enumerate(msg.tool_calls):
-                fn = tc.function
-                tool_name = fn.name
-                tool_args_raw = fn.arguments or "{}"
-                try:
-                    tool_args = json.loads(tool_args_raw)
-                except Exception:  # noqa: BLE001
-                    tool_args = {}
-                tool_args = _maybe_inject_flow_id(tool_name=tool_name, tool_args=tool_args, flow_id=request.flow_id)
-
-                tool_error: str | None = None
-                tool_result_text: str | None = None
-
-                try:
-                    tool_result = await call_workflow_tool(
-                        tool_name=tool_name,
-                        arguments=tool_args,
-                        user_id=current_user.id,
-                    )
-                    tool_result_text = "\n".join([c.text for c in tool_result if getattr(c, "text", None)])
-                except WorkflowEditError as exc:
-                    tool_error = str(exc)
-                    tool_result_text = f"ERROR: {exc}"
-                except Exception as exc:  # noqa: BLE001
-                    tool_error = str(exc)
-                    tool_result_text = f"ERROR: {exc}"
-
-                tool_calls_log.append(
-                    ToolCallDetail(
-                        name=tool_name,
-                        arguments=tool_args,
-                        result=tool_result_text if not tool_error else None,
-                        error=tool_error,
-                    )
-                )
-
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_calls_payload[idx]["id"],
-                        "content": tool_result_text,
-                    }
-                )
-            continue
-
-        final_text = msg.content or ""
-        return FlowAssistantChatResponse(
-            message=final_text,
-            tool_calls=tool_calls_log,
-        )
+    finally:
+        await client.close()
 
     raise HTTPException(
         status_code=500,
@@ -729,7 +732,7 @@ async def _stream_assistant_chat(
     api_key: str,
 ) -> AsyncGenerator[str, None]:
     """Stream assistant chat responses with tool calls."""
-    client = OpenAI(api_key=api_key, base_url=QUERYROUTER_BASE_URL)
+    client = AsyncOpenAI(api_key=api_key, base_url=QUERYROUTER_BASE_URL)
     tools = _build_openai_tools()
 
     messages = _build_openai_messages(flow_id=flow_id, message=message, history=history)
@@ -738,181 +741,184 @@ async def _stream_assistant_chat(
     max_iterations = _get_max_iterations()
     iteration = 0
 
-    while True:
-        iteration += 1
-        if max_iterations > 0 and iteration > max_iterations:
-            break
-
-        try:
-            extra_body: dict[str, Any] = {}
-            if is_reasoning:
-                extra_body["include_reasoning"] = True
-
-            stream = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=tools,
-                tool_choice="auto",
-                temperature=0.2,
-                stream=True,
-                extra_body=extra_body if extra_body else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            await logger.aerror(f"Flow assistant LLM stream error: {exc!s}")
-            yield _sse_event("error", {"message": "LLM request failed", "detail": str(exc)})
-            return
-
-        content_buffer = ""
-        reasoning_details: list[Any] = []
-        reasoning_content_buffer = ""
-        tool_calls_buffer: dict[int, dict[str, Any]] = {}
-        final_message: dict[str, Any] | None = None
-
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            choice_dict = choice.model_dump() if hasattr(choice, "model_dump") else {}
-
-            if choice_dict.get("message"):
-                final_message = choice_dict["message"]
-                if final_message.get("content"):
-                    yield _sse_event("text", {"content": final_message["content"]})
-                continue
-
-            delta = choice.delta
-            delta_dict = delta.model_dump() if hasattr(delta, "model_dump") else {}
-
-            if delta_dict.get("reasoning_details"):
-                for detail in delta_dict["reasoning_details"]:
-                    reasoning_details.append(detail)
-                    if isinstance(detail, dict) and "content" in detail:
-                        reasoning_content_buffer += detail.get("content", "")
-                    elif isinstance(detail, str):
-                        reasoning_content_buffer += detail
-
-                    if reasoning_content_buffer:
-                        yield _sse_event(
-                            "reasoning",
-                            {
-                                "content": detail.get("content", "") if isinstance(detail, dict) else str(detail),
-                                "summary": detail.get("summary") if isinstance(detail, dict) else None,
-                            },
-                        )
-
-            if delta.content:
-                content_buffer += delta.content
-                yield _sse_event("text", {"content": delta.content})
-
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    tc_dict = tc.model_dump() if hasattr(tc, "model_dump") else {}
-
-                    if idx not in tool_calls_buffer:
-                        tool_call_id = tc.id or _new_tool_call_id()
-                        tool_calls_buffer[idx] = {
-                            "id": tool_call_id,
-                            "type": "function",
-                            "function": {"name": "", "arguments": ""},
-                        }
-
-                    if tc.id:
-                        tool_calls_buffer[idx]["id"] = tc.id
-                    if tc_dict.get("type"):
-                        tool_calls_buffer[idx]["type"] = tc_dict["type"]
-
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_buffer[idx]["function"]["name"] = tc.function.name
-                            yield _sse_event("tool_start", {"name": tc.function.name})
-                        if tc.function.arguments:
-                            tool_calls_buffer[idx]["function"]["arguments"] += tc.function.arguments
-
-                    for key, val in tc_dict.items():
-                        if key not in ("index", "id", "type", "function") and val is not None:
-                            tool_calls_buffer[idx][key] = val
-
-        if final_message:
-            if not final_message.get("tool_calls"):
-                yield _sse_event("done", {"message": final_message.get("content", content_buffer)})
-                return
-            tool_calls_for_execution = final_message["tool_calls"]
-            _ensure_tool_call_ids(tool_calls_for_execution)
-            tool_calls_for_execution = _filter_complete_tool_calls(tool_calls_for_execution)
-            if not tool_calls_for_execution:
-                yield _sse_event("done", {"message": final_message.get("content", content_buffer)})
-                return
-            assistant_message = {
-                "role": "assistant",
-                "content": final_message.get("content") or content_buffer,
-                "tool_calls": tool_calls_for_execution,
-            }
-            if final_message.get("reasoning_details"):
-                assistant_message["reasoning_details"] = final_message["reasoning_details"]
-        else:
-            if not tool_calls_buffer:
-                yield _sse_event("done", {"message": content_buffer})
-                return
-            tool_calls_for_execution = list(tool_calls_buffer.values())
-            _ensure_tool_call_ids(tool_calls_for_execution)
-            tool_calls_for_execution = _filter_complete_tool_calls(tool_calls_for_execution)
-            if not tool_calls_for_execution:
-                yield _sse_event("done", {"message": content_buffer})
-                return
-            assistant_message = {
-                "role": "assistant",
-                "content": content_buffer,
-                "tool_calls": tool_calls_for_execution,
-            }
-            if reasoning_details:
-                assistant_message["reasoning_details"] = reasoning_details
-
-        messages.append(assistant_message)
-
-        for tc in tool_calls_for_execution:
-            tc_func = tc.get("function", {})
-            tool_name = tc_func.get("name", "")
-            tool_args_raw = tc_func.get("arguments", "")
-            try:
-                tool_args = json.loads(tool_args_raw) if tool_args_raw else {}
-            except Exception:  # noqa: BLE001
-                tool_args = {}
-            tool_args = _maybe_inject_flow_id(tool_name=tool_name, tool_args=tool_args, flow_id=flow_id)
-
-            yield _sse_event("tool_call", {"name": tool_name, "arguments": tool_args})
-
-            tool_error: str | None = None
-            tool_result_text: str | None = None
+    try:
+        while True:
+            iteration += 1
+            if max_iterations > 0 and iteration > max_iterations:
+                break
 
             try:
-                tool_result = await call_workflow_tool(
-                    tool_name=tool_name,
-                    arguments=tool_args,
-                    user_id=user_id,
+                extra_body: dict[str, Any] = {}
+                if is_reasoning:
+                    extra_body["include_reasoning"] = True
+
+                stream = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.2,
+                    stream=True,
+                    extra_body=extra_body if extra_body else None,
                 )
-                tool_result_text = "\n".join([c.text for c in tool_result if getattr(c, "text", None)])
-            except WorkflowEditError as exc:
-                tool_error = str(exc)
-                tool_result_text = f"ERROR: {exc}"
             except Exception as exc:  # noqa: BLE001
-                tool_error = str(exc)
-                tool_result_text = f"ERROR: {exc}"
+                await logger.aerror(f"Flow assistant LLM stream error: {exc!s}")
+                yield _sse_event("error", {"message": "LLM request failed", "detail": str(exc)})
+                return
 
-            yield _sse_event(
-                "tool_result",
-                {"name": tool_name, "result": tool_result_text, "error": tool_error},
-            )
+            content_buffer = ""
+            reasoning_details: list[Any] = []
+            reasoning_content_buffer = ""
+            tool_calls_buffer: dict[int, dict[str, Any]] = {}
+            final_message: dict[str, Any] | None = None
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_result_text,
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                choice_dict = choice.model_dump() if hasattr(choice, "model_dump") else {}
+
+                if choice_dict.get("message"):
+                    final_message = choice_dict["message"]
+                    if final_message.get("content"):
+                        yield _sse_event("text", {"content": final_message["content"]})
+                    continue
+
+                delta = choice.delta
+                delta_dict = delta.model_dump() if hasattr(delta, "model_dump") else {}
+
+                if delta_dict.get("reasoning_details"):
+                    for detail in delta_dict["reasoning_details"]:
+                        reasoning_details.append(detail)
+                        if isinstance(detail, dict) and "content" in detail:
+                            reasoning_content_buffer += detail.get("content", "")
+                        elif isinstance(detail, str):
+                            reasoning_content_buffer += detail
+
+                        if reasoning_content_buffer:
+                            yield _sse_event(
+                                "reasoning",
+                                {
+                                    "content": detail.get("content", "") if isinstance(detail, dict) else str(detail),
+                                    "summary": detail.get("summary") if isinstance(detail, dict) else None,
+                                },
+                            )
+
+                if delta.content:
+                    content_buffer += delta.content
+                    yield _sse_event("text", {"content": delta.content})
+
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        tc_dict = tc.model_dump() if hasattr(tc, "model_dump") else {}
+
+                        if idx not in tool_calls_buffer:
+                            tool_call_id = tc.id or _new_tool_call_id()
+                            tool_calls_buffer[idx] = {
+                                "id": tool_call_id,
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+
+                        if tc.id:
+                            tool_calls_buffer[idx]["id"] = tc.id
+                        if tc_dict.get("type"):
+                            tool_calls_buffer[idx]["type"] = tc_dict["type"]
+
+                        if tc.function:
+                            if tc.function.name:
+                                tool_calls_buffer[idx]["function"]["name"] = tc.function.name
+                                yield _sse_event("tool_start", {"name": tc.function.name})
+                            if tc.function.arguments:
+                                tool_calls_buffer[idx]["function"]["arguments"] += tc.function.arguments
+
+                        for key, val in tc_dict.items():
+                            if key not in ("index", "id", "type", "function") and val is not None:
+                                tool_calls_buffer[idx][key] = val
+
+            if final_message:
+                if not final_message.get("tool_calls"):
+                    yield _sse_event("done", {"message": final_message.get("content", content_buffer)})
+                    return
+                tool_calls_for_execution = final_message["tool_calls"]
+                _ensure_tool_call_ids(tool_calls_for_execution)
+                tool_calls_for_execution = _filter_complete_tool_calls(tool_calls_for_execution)
+                if not tool_calls_for_execution:
+                    yield _sse_event("done", {"message": final_message.get("content", content_buffer)})
+                    return
+                assistant_message = {
+                    "role": "assistant",
+                    "content": final_message.get("content") or content_buffer,
+                    "tool_calls": tool_calls_for_execution,
                 }
-            )
+                if final_message.get("reasoning_details"):
+                    assistant_message["reasoning_details"] = final_message["reasoning_details"]
+            else:
+                if not tool_calls_buffer:
+                    yield _sse_event("done", {"message": content_buffer})
+                    return
+                tool_calls_for_execution = list(tool_calls_buffer.values())
+                _ensure_tool_call_ids(tool_calls_for_execution)
+                tool_calls_for_execution = _filter_complete_tool_calls(tool_calls_for_execution)
+                if not tool_calls_for_execution:
+                    yield _sse_event("done", {"message": content_buffer})
+                    return
+                assistant_message = {
+                    "role": "assistant",
+                    "content": content_buffer,
+                    "tool_calls": tool_calls_for_execution,
+                }
+                if reasoning_details:
+                    assistant_message["reasoning_details"] = reasoning_details
 
-        await asyncio.sleep(0.01)
+            messages.append(assistant_message)
+
+            for tc in tool_calls_for_execution:
+                tc_func = tc.get("function", {})
+                tool_name = tc_func.get("name", "")
+                tool_args_raw = tc_func.get("arguments", "")
+                try:
+                    tool_args = json.loads(tool_args_raw) if tool_args_raw else {}
+                except Exception:  # noqa: BLE001
+                    tool_args = {}
+                tool_args = _maybe_inject_flow_id(tool_name=tool_name, tool_args=tool_args, flow_id=flow_id)
+
+                yield _sse_event("tool_call", {"name": tool_name, "arguments": tool_args})
+
+                tool_error: str | None = None
+                tool_result_text: str | None = None
+
+                try:
+                    tool_result = await call_workflow_tool(
+                        tool_name=tool_name,
+                        arguments=tool_args,
+                        user_id=user_id,
+                    )
+                    tool_result_text = "\n".join([c.text for c in tool_result if getattr(c, "text", None)])
+                except WorkflowEditError as exc:
+                    tool_error = str(exc)
+                    tool_result_text = f"ERROR: {exc}"
+                except Exception as exc:  # noqa: BLE001
+                    tool_error = str(exc)
+                    tool_result_text = f"ERROR: {exc}"
+
+                yield _sse_event(
+                    "tool_result",
+                    {"name": tool_name, "result": tool_result_text, "error": tool_error},
+                )
+
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": tool_result_text,
+                    }
+                )
+
+            await asyncio.sleep(0.01)
+    finally:
+        await client.close()
 
     yield _sse_event(
         "error",
