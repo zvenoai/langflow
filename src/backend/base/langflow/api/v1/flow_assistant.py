@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from lfx.log.logger import logger
 from openai import OpenAI
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from langflow.api.utils import CurrentActiveUser
 from langflow.api.v1.workflow_edit_tools import WORKFLOW_MCP_TOOLS, WorkflowEditError, call_workflow_tool
@@ -66,8 +66,91 @@ def _filter_complete_tool_calls(tool_calls: list[dict[str, Any]]) -> list[dict[s
 
 
 class AssistantMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    content: str | None = None
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_openai_tool_fields(self) -> AssistantMessage:
+        if self.role == "tool" and not self.tool_call_id:
+            raise _ToolCallIdRequiredForToolRoleError
+        if self.role != "tool" and self.tool_call_id is not None:
+            raise _ToolCallIdOnlyAllowedForToolRoleError
+        if self.role != "assistant" and self.tool_calls is not None:
+            raise _ToolCallsOnlyAllowedForAssistantRoleError
+        if self.role == "assistant" and self.tool_calls is not None:
+            for tc in self.tool_calls:
+                if not isinstance(tc, dict):
+                    raise _ToolCallsItemsMustBeObjectsError
+                if not tc.get("id"):
+                    raise _ToolCallsIdRequiredError
+        return self
+
+
+class _AssistantMessageValidationError(ValueError):
+    """Base error for invalid OpenAI chat messages in Flow Assistant history."""
+
+
+class _ToolCallIdRequiredForToolRoleError(_AssistantMessageValidationError):
+    def __init__(self) -> None:
+        super().__init__("tool_call_id is required when role='tool'")
+
+
+class _ToolCallIdOnlyAllowedForToolRoleError(_AssistantMessageValidationError):
+    def __init__(self) -> None:
+        super().__init__("tool_call_id is only allowed when role='tool'")
+
+
+class _ToolCallsOnlyAllowedForAssistantRoleError(_AssistantMessageValidationError):
+    def __init__(self) -> None:
+        super().__init__("tool_calls is only allowed when role='assistant'")
+
+
+class _ToolCallsItemsMustBeObjectsError(_AssistantMessageValidationError):
+    def __init__(self) -> None:
+        super().__init__("tool_calls items must be objects")
+
+
+class _ToolCallsIdRequiredError(_AssistantMessageValidationError):
+    def __init__(self) -> None:
+        super().__init__("tool_calls[].id is required for assistant messages")
+
+
+def _normalize_tool_call_arguments(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize tool call payloads to OpenAI-compatible schema.
+
+    OpenAI requires `function.arguments` to be a JSON string.
+    """
+    normalized: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        tc_copy = dict(tc)
+        tc_func = tc_copy.get("function")
+        if isinstance(tc_func, dict):
+            tc_func_copy = dict(tc_func)
+            args = tc_func_copy.get("arguments")
+            if isinstance(args, dict):
+                tc_func_copy["arguments"] = json.dumps(args)
+            tc_copy["function"] = tc_func_copy
+        normalized.append(tc_copy)
+    return normalized
+
+
+def _assistant_message_to_openai_dict(m: AssistantMessage) -> dict[str, Any]:
+    msg: dict[str, Any] = {"role": m.role, "content": m.content or ""}
+    if m.tool_calls is not None:
+        msg["tool_calls"] = _normalize_tool_call_arguments(m.tool_calls)
+    if m.tool_call_id is not None:
+        msg["tool_call_id"] = m.tool_call_id
+    return msg
+
+
+def _build_openai_messages(*, flow_id: UUID, message: str, history: list[AssistantMessage]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = [{"role": "system", "content": _system_prompt()}]
+    messages.extend(_assistant_message_to_openai_dict(m) for m in history)
+    messages.append({"role": "user", "content": f"flow_id={flow_id}\n\n{message}"})
+    return messages
 
 
 class ToolCallDetail(BaseModel):
@@ -157,19 +240,17 @@ async def flow_assistant_models(current_user: CurrentActiveUser):
 
 
 def _build_openai_tools() -> list[dict[str, Any]]:
-    tools: list[dict[str, Any]] = []
-    for tool in WORKFLOW_MCP_TOOLS:
-        tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.input_schema,
-                },
-            }
-        )
-    return tools
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.input_schema,
+            },
+        }
+        for tool in WORKFLOW_MCP_TOOLS
+    ]
 
 
 def _system_prompt() -> str:
@@ -231,7 +312,8 @@ AVAILABLE TOOLS
    - add_note: {"op": "add_note", "content": "Note text", "position": {...}, "background_color": "amber"}
    - update_note: {"op": "update_note", "note_id": "...", "content": "...", "background_color": "..."}
    - set_node_template_value: {"op": "set_node_template_value", "node_id": "...", "field": "...", "value": ...}
-   - add_edge: {"op": "add_edge", "edge": {"source": "...", "target": "...", "sourceHandle": "...", "targetHandle": "..."}}
+  - add_edge: {"op": "add_edge", "edge": {"source": "...", "target": "...",
+                                         "sourceHandle": "...", "targetHandle": "..."}}
    - remove_edge: {"op": "remove_edge", "edge_id": "..."}
    - remove_node: {"op": "remove_node", "node_id": "..."}
 
@@ -379,7 +461,8 @@ BEFORE every add_edge:
 COMMON ISSUE: Dynamic input_types
 Some inputs are empty by default. Example:
 - Agent's "agent_llm" starts with input_types=[]
-- FIRST set: {"op": "set_node_template_value", "node_id": "Agent-xxx", "field": "agent_llm", "value": "connect_other_models"}
+- FIRST set: {"op": "set_node_template_value", "node_id": "Agent-xxx",
+             "field": "agent_llm", "value": "connect_other_models"}
 - THEN connect the LLM component
 
 Common handle names (verify with lf_node_handles):
@@ -517,10 +600,7 @@ async def flow_assistant_chat(
     client = OpenAI(api_key=api_key, base_url=QUERYROUTER_BASE_URL)
 
     tools = _build_openai_tools()
-    messages: list[dict[str, Any]] = [{"role": "system", "content": _system_prompt()}]
-    for m in request.history:
-        messages.append({"role": m.role, "content": m.content})
-    messages.append({"role": "user", "content": f"flow_id={request.flow_id}\n\n{request.message}"})
+    messages = _build_openai_messages(flow_id=request.flow_id, message=request.message, history=request.history)
 
     tool_calls_log: list[ToolCallDetail] = []
     is_reasoning = _is_reasoning_model(model)
@@ -652,10 +732,7 @@ async def _stream_assistant_chat(
     client = OpenAI(api_key=api_key, base_url=QUERYROUTER_BASE_URL)
     tools = _build_openai_tools()
 
-    messages: list[dict[str, Any]] = [{"role": "system", "content": _system_prompt()}]
-    for m in history:
-        messages.append({"role": m.role, "content": m.content})
-    messages.append({"role": "user", "content": f"flow_id={flow_id}\n\n{message}"})
+    messages = _build_openai_messages(flow_id=flow_id, message=message, history=history)
 
     is_reasoning = _is_reasoning_model(model)
     max_iterations = _get_max_iterations()
