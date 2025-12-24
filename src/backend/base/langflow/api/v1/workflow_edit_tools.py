@@ -1941,6 +1941,21 @@ WORKFLOW_MCP_TOOLS: list[WorkflowMcpTool] = [
             "required": ["action"],
         },
     ),
+    WorkflowMcpTool(
+        name="lf_list_global_variables",
+        description=(
+            "List all global variables (environment variables) available to the current user. "
+            "Returns variable names and whether they are set (without exposing secret values). "
+            "Use this to check if required API keys exist before configuring components. "
+            "For example, check for TELEGRAM_BOT_TOKEN before adding Telegram components, "
+            "or OPENAI_API_KEY before adding OpenAI components."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -2530,6 +2545,48 @@ async def call_workflow_tool(
 
         msg = f"Unknown action '{action}'. Use 'index', 'search', or 'read'."
         raise WorkflowEditError(msg)
+
+    if tool_name == "lf_list_global_variables":
+        from langflow.services.deps import get_variable_service
+
+        async with session_scope() as session:
+            variable_service = get_variable_service()
+            try:
+                from langflow.services.variable.service import DatabaseVariableService
+
+                if not isinstance(variable_service, DatabaseVariableService):
+                    msg = "Variable service is not available"
+                    raise WorkflowEditError(msg)
+
+                variables = await variable_service.get_all(user_id=user_id, session=session)
+
+                # Format variables for assistant (hide secret values)
+                variables_list = []
+                for var in variables:
+                    var_info = {
+                        "name": var.name,
+                        "type": var.type,
+                        "is_set": bool(var.value and var.value.strip()),
+                    }
+                    # Only show non-secret values
+                    if var.type != "Credential":
+                        var_info["value"] = var.value
+                    variables_list.append(var_info)
+
+                result = {
+                    "variables": variables_list,
+                    "count": len(variables_list),
+                    "message": (
+                        "List of global variables. Secret values are hidden. "
+                        "Use these variable names when configuring components."
+                    ),
+                }
+
+                return [types.TextContent(type="text", text=_json_dumps(result))]
+
+            except Exception as exc:
+                msg = f"Failed to retrieve global variables: {exc!s}"
+                raise WorkflowEditError(msg) from exc
 
     msg = f"Unknown workflow tool '{tool_name}'"
     raise WorkflowEditError(msg)

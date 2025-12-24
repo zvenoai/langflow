@@ -37,7 +37,8 @@ class TelegramSetWebhook(Component):
     """Компонент для установки webhook URL для Telegram Bot API.
 
     Используйте для настройки Telegram для отправки обновлений в ваш Langflow поток.
-    Webhook URL должен указывать на: https://your-langflow-server/api/v1/webhook/{flow_id}
+    Webhook URL можно скопировать из поля 'Endpoint' компонента TelegramWebhook,
+    затем заменить домен на ваш публичный HTTPS адрес.
     После установки webhook используйте компонент TelegramWebhook в вашем потоке для приема обновлений.
     """
 
@@ -45,6 +46,7 @@ class TelegramSetWebhook(Component):
     description = (
         "Устанавливает webhook URL для приема входящих обновлений через исходящий webhook. "
         "Telegram будет отправлять POST запросы на этот URL при каждом обновлении для бота. "
+        "Скопируйте URL из компонента TelegramWebhook и замените домен на публичный HTTPS адрес. "
         "Настройте один раз, затем используйте компонент TelegramWebhook "
         "в вашем потоке для обработки входящих сообщений."
     )
@@ -64,18 +66,15 @@ class TelegramSetWebhook(Component):
             name="url",
             display_name="Webhook URL",
             value="BACKEND_URL",
-            required=True,
-            info=(
-                "HTTPS URL для отправки обновлений от Telegram. Формат: "
-                "https://your-langflow-server/api/v1/webhook/{flow_id}. "
-                "Где взять URL: 1) Скопируйте из поля 'Endpoint' компонента TelegramWebhook в вашем потоке, "
-                "2) Или найдите Flow ID в URL потока (после /flow/) и подставьте в формат выше, "
-                "3) Или откройте API Access pane потока и скопируйте URL из вкладки 'Webhook curl'. "
-                "Используйте пустую строку для удаления webhook. URL должен быть HTTPS с валидным SSL сертификатом."
-            ),
-            tool_mode=True,
+            advanced=False,
             copy_field=True,
             input_types=[],
+            info=(
+                "HTTPS URL для отправки обновлений от Telegram. "
+                "Скопируйте URL из поля 'Endpoint' компонента 'Telegram Webhook', "
+                "затем замените домен на ваш публичный адрес с HTTPS. "
+                "Используйте пустую строку для удаления webhook."
+            ),
         ),
         BoolInput(
             name="auto_generate_secret",
@@ -145,14 +144,41 @@ class TelegramSetWebhook(Component):
         if not self.bot_token:
             msg = "Требуется токен бота"
             raise ValueError(msg)
-        if not self.url:
-            msg = "Требуется Webhook URL. Используйте пустую строку для удаления webhook."
+
+        webhook_url = self.url
+
+        # Explicit check for None or other unexpected falsy values (except empty string)
+        if webhook_url is None:
+            msg = (
+                "Webhook URL не может быть None. "
+                "Используйте пустую строку для удаления webhook или укажите HTTPS URL для установки."
+            )
+            raise ValueError(msg)
+
+        # Empty string is valid (means delete webhook)
+        if webhook_url == "":
+            # This is OK - will delete the webhook
+            pass
+        elif webhook_url == "BACKEND_URL":
+            msg = (
+                "Webhook URL должен быть заменен на реальный HTTPS URL вашего сервера. "
+                "Скопируйте URL из поля 'Endpoint' компонента 'Telegram Webhook' в вашем потоке, "
+                "затем замените домен на ваш публичный адрес с HTTPS. "
+                "Формат: https://your-server/api/v1/webhook/{flow_id}"
+            )
+            raise ValueError(msg)
+        elif not webhook_url.startswith("https://"):
+            msg = (
+                "Telegram требует HTTPS для webhook URL. "
+                f"Предоставлен: {webhook_url}. "
+                "Используйте URL с протоколом https:// или пустую строку для удаления webhook."
+            )
             raise ValueError(msg)
 
         url = f"https://api.telegram.org/bot{self.bot_token}/setWebhook"
 
         payload = {
-            "url": self.url,
+            "url": webhook_url,
         }
 
         # Генерация secret token
@@ -233,7 +259,7 @@ class TelegramSetWebhook(Component):
 
                 result = response_data.get("result", {})
                 description = response_data.get("description", "")
-                await logger.ainfo(f"Webhook {'установлен' if self.url else 'удален'} успешно: {description}")
+                await logger.ainfo(f"Webhook {'установлен' if webhook_url else 'удален'} успешно: {description}")
 
                 return Data(
                     value={"ok": True, "description": description, "result": result},
