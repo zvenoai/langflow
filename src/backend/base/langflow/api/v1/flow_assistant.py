@@ -423,6 +423,12 @@ AVAILABLE TOOLS
     - 'read': Get full content of a specific page by slug or filename
     ALWAYS use this when you need detailed information about Langflow features!
 
+11. lf_list_global_variables - LIST USER'S GLOBAL VARIABLES
+    Returns all global variables (API keys, tokens, etc.) available to the user.
+    Shows variable names and whether they are set (secrets are hidden).
+    Use this to check if required API keys exist before configuring components.
+    Example: Check for TELEGRAM_BOT_TOKEN before adding Telegram components.
+
 ═══════════════════════════════════════════════════════════════════════════════
 LANGFLOW KNOWLEDGE BASE
 ═══════════════════════════════════════════════════════════════════════════════
@@ -493,6 +499,35 @@ Key: Use correct text splitter for document type
 PATTERN 4: API Integration
 Components: Webhook/TextInput → ProcessingComponents → APIRequest/Output
 Key: Use existing API components before creating custom ones
+
+PATTERN 5: Telegram Bot Integration
+Components: TelegramWebhook → Agent → TelegramSendMessage
+CRITICAL: ALWAYS include TelegramSetWebhook component to configure webhook URL!
+
+Before starting:
+1. Use lf_list_global_variables to check if TELEGRAM_BOT_TOKEN exists
+2. If not, inform user to create global variable TELEGRAM_BOT_TOKEN with their bot token
+
+Steps:
+1. add_node TelegramWebhook at x=200, y=400
+2. add_node TelegramSetWebhook at x=200, y=200 (one-time setup component)
+3. Configure TelegramSetWebhook:
+   - bot_token (required) - use global variable TELEGRAM_BOT_TOKEN if available
+   - webhook_url: Copy URL from TelegramWebhook's 'Endpoint' field, replace domain with public HTTPS address
+4. add_node Agent at x=600, y=400
+5. add_node TelegramSendMessage at x=1000, y=400
+6. add_edge: TelegramWebhook.message → Agent.input_value
+7. add_edge: TelegramWebhook.chat_info → TelegramSendMessage.chat_id
+8. add_edge: Agent.response → TelegramSendMessage.message_text
+
+Key Points:
+- Check for TELEGRAM_BOT_TOKEN global variable first
+- TelegramSetWebhook must be configured and executed once to register webhook with Telegram
+- Copy webhook URL from TelegramWebhook component's 'Endpoint' field
+- Replace localhost/domain with your public HTTPS URL (Telegram requires HTTPS!)
+- TelegramWebhook receives updates from Telegram Bot API
+- Use chat_info output to send replies to the correct chat
+- bot_token required for all Telegram components
 
 ═══════════════════════════════════════════════════════════════════════════════
 WORKING WITH DROPDOWN FIELDS
@@ -606,6 +641,25 @@ INPUT/OUTPUT:
 - TextInput/TextOutput: Simple text handling
 - FileLoader: Load files (PDF, CSV, JSON, etc.)
 - Webhook: Receive HTTP requests
+
+TELEGRAM INTEGRATION:
+Before adding Telegram components, use lf_list_global_variables to check for TELEGRAM_BOT_TOKEN.
+
+★ TelegramSetWebhook - REQUIRED for all Telegram workflows!
+  - Component type: "TelegramSetWebhook"
+  - Sets up webhook URL for receiving Telegram updates
+  - Must be configured and run once before using other Telegram components
+  - Inputs: bot_token (use TELEGRAM_BOT_TOKEN global variable),
+    webhook_url (copy from TelegramWebhook's Endpoint, replace with public HTTPS URL)
+  - IMPORTANT: Telegram requires HTTPS! Replace localhost with your public domain
+- TelegramWebhook: Receives and parses incoming Telegram updates
+  - Outputs: message (Message), chat_info (Data), update_data (Data)
+  - The 'Endpoint' field shows the webhook URL path to use
+- TelegramSendMessage: Sends messages to Telegram chats
+  - Inputs: bot_token (use TELEGRAM_BOT_TOKEN global variable), chat_id, message_text
+  - Connect chat_info from TelegramWebhook to chat_id for replies
+- TelegramGetWebhookInfo: Get current webhook configuration status
+- TelegramDeleteWebhook: Remove webhook configuration
 
 MODELS (LLM Providers):
 ★ QueryRouterModel (QueryRouter) - PREFERRED! Unified access to 100+ models
