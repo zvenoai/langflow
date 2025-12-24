@@ -1526,6 +1526,10 @@ class Component(CustomComponent):
 
     def _should_skip_message(self, message: Message) -> bool:
         """Check if the message should be skipped based on vertex configuration and message type."""
+        # Agent components must always store messages for internal event tracking
+        if hasattr(self, "trace_type") and self.trace_type == "agent":
+            return False
+
         return (
             self._vertex is not None
             and not (self._vertex.is_output or self._vertex.is_input)
