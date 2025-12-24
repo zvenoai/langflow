@@ -1,15 +1,19 @@
 import httpx
-from langchain_openai import ChatOpenAI
 from pydantic.v1 import SecretStr
 
 from lfx.base.models.model import LCModelComponent
+from lfx.base.models.reasoning_chat_openai import ReasoningChatOpenAI
 from lfx.field_typing import LanguageModel
 from lfx.field_typing.range_spec import RangeSpec
 from lfx.inputs.inputs import DropdownInput, IntInput, SecretStrInput, SliderInput
 
 
 class QueryRouterModelComponent(LCModelComponent):
-    """QueryRouter API component for language models."""
+    """QueryRouter API component for language models.
+
+    This component uses ReasoningChatOpenAI which properly preserves reasoning_details
+    for compatibility with Gemini models via OpenRouter when using tool calling.
+    """
 
     display_name = "QueryRouter"
     description = "QueryRouter provides unified access to multiple AI models through an OpenAI-compatible API."
@@ -54,7 +58,8 @@ class QueryRouterModelComponent(LCModelComponent):
         Each model dict contains: slug, name, context_length, vendor, price info, etc.
         """
         try:
-            # Prepare headers with API key if available (API doesn't require auth, but we include it for future compatibility)
+            # Prepare headers with API key if available.
+            # API doesn't require auth, but we include it for future compatibility.
             headers = {}
             if self.api_key:
                 if isinstance(self.api_key, SecretStr):
@@ -129,7 +134,11 @@ class QueryRouterModelComponent(LCModelComponent):
         return build_config
 
     def build_model(self) -> LanguageModel:
-        """Build the QueryRouter model."""
+        """Build the QueryRouter model.
+
+        Uses ReasoningChatOpenAI which preserves reasoning_details for compatibility
+        with Gemini models when using tool calling via agents.
+        """
         if not self.api_key:
             msg = "API key is required"
             raise ValueError(msg)
@@ -147,4 +156,4 @@ class QueryRouterModelComponent(LCModelComponent):
         if self.max_tokens:
             kwargs["max_tokens"] = int(self.max_tokens)
 
-        return ChatOpenAI(**kwargs)
+        return ReasoningChatOpenAI(**kwargs)
