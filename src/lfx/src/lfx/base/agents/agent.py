@@ -228,12 +228,15 @@ class LCAgentComponent(Component):
             session_id = None
 
         sender_name = get_chat_output_sender_name(self) or self.display_name or "AI"
+        # Get context_id from component if available
+        context_id = getattr(self, "context_id", None) or ""
         agent_message = Message(
             sender=MESSAGE_SENDER_AI,
             sender_name=sender_name,
             properties={"icon": "Bot", "state": "partial"},
             content_blocks=[ContentBlock(title="Agent Steps", contents=[])],
             session_id=session_id or uuid.uuid4(),
+            context_id=context_id,
         )
 
         # Create token callback if event_manager is available

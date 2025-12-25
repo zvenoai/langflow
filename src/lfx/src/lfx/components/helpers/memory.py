@@ -10,7 +10,7 @@ from lfx.schema.dotdict import dotdict
 from lfx.schema.message import Message
 from lfx.template.field.base import Output
 from lfx.utils.component_utils import set_current_fields, set_field_display
-from lfx.utils.constants import MESSAGE_SENDER_AI, MESSAGE_SENDER_NAME_AI, MESSAGE_SENDER_USER
+from lfx.utils.constants import MESSAGE_SENDER_AI, MESSAGE_SENDER_NAME_AI, MESSAGE_SENDER_NAME_USER, MESSAGE_SENDER_USER
 
 
 class MemoryComponent(Component):
@@ -60,16 +60,17 @@ class MemoryComponent(Component):
         MessageTextInput(
             name="sender",
             display_name="Sender",
-            info="The sender of the message. Might be Machine or User. "
+            info="The sender type of the message (Machine or User). "
             "If empty, the current sender parameter will be used.",
+            value="User",
             advanced=True,
         ),
         MessageTextInput(
             name="sender_name",
             display_name="Sender Name",
-            info="Filter by sender name.",
+            info="The name of the sender (e.g., 'User', 'AI'). Used for storing and filtering messages.",
+            value="User",
             advanced=True,
-            show=False,
         ),
         IntInput(
             name="n_messages",
@@ -150,8 +151,27 @@ class MemoryComponent(Component):
 
         message.context_id = self.context_id or message.context_id
         message.session_id = self.session_id or message.session_id
-        message.sender = self.sender or message.sender or MESSAGE_SENDER_AI
-        message.sender_name = self.sender_name or message.sender_name or MESSAGE_SENDER_NAME_AI
+
+        # Set sender (used in Store mode)
+        if self.sender is not None and self.sender != "":
+            message.sender = self.sender
+        elif message.sender:
+            message.sender = message.sender
+        else:
+            message.sender = MESSAGE_SENDER_AI
+
+        # sender_name should be derived from sender, not set separately in Store mode
+        # If incoming message already has sender_name, keep it; otherwise derive from sender
+        if message.sender_name:
+            # Keep existing sender_name from message
+            pass
+        elif message.sender in (MESSAGE_SENDER_USER, "User"):
+            message.sender_name = MESSAGE_SENDER_NAME_USER  # "User"
+        elif message.sender in (MESSAGE_SENDER_AI, "Machine"):
+            message.sender_name = MESSAGE_SENDER_NAME_AI  # "AI"
+        else:
+            # Fallback: use sender as sender_name
+            message.sender_name = message.sender
 
         stored_messages: list[Message] = []
 
@@ -197,6 +217,7 @@ class MemoryComponent(Component):
 
         if sender_type == "Machine and User":
             sender_type = None
+            sender_name = None  # Don't filter by sender_name when retrieving all messages
 
         if self.memory and not hasattr(self.memory, "aget_messages"):
             memory_name = type(self.memory).__name__
@@ -240,7 +261,8 @@ class MemoryComponent(Component):
         return cast("Data", stored)
 
     async def retrieve_messages_as_text(self) -> Message:
-        stored_text = data_to_text(self.template, await self.retrieve_messages())
+        messages_data = await self.retrieve_messages()
+        stored_text = data_to_text(self.template, messages_data)
         # self.status = stored_text
         return Message(text=stored_text)
 

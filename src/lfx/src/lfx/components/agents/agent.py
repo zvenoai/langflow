@@ -23,6 +23,7 @@ from lfx.helpers.base_model import build_model_from_schema
 from lfx.inputs.inputs import BoolInput, SecretStrInput, StrInput
 from lfx.io import DropdownInput, IntInput, MessageTextInput, MultilineInput, Output, TableInput
 from lfx.log.logger import logger
+from lfx.memory import astore_message
 from lfx.schema.data import Data
 from lfx.schema.dotdict import dotdict
 from lfx.schema.message import Message
@@ -188,8 +189,7 @@ class AgentComponent(ToolCallingAgentComponent):
             ],
         ),
         *LCToolsAgentComponent.get_base_inputs(),
-        # removed memory inputs from agent component
-        # *memory_inputs,
+        *memory_inputs,
         BoolInput(
             name="add_current_date_tool",
             display_name="Current Date",
@@ -209,6 +209,9 @@ class AgentComponent(ToolCallingAgentComponent):
             msg = "No language model selected. Please choose a model to proceed."
             raise ValueError(msg)
         self.model_name = get_model_name(llm_model, display_name=display_name)
+
+        # Store incoming message if not already stored
+        await self._ensure_input_message_stored()
 
         # Get memory data
         self.chat_history = await self.get_memory_data()
@@ -440,18 +443,59 @@ class AgentComponent(ToolCallingAgentComponent):
             await logger.aerror(f"Error in structured output processing: {e}")
             return Data(data={"content": content, "error": str(e)})
 
+    async def _ensure_input_message_stored(self):
+        """Ensure input message is stored in history if not already saved.
+
+        This allows Agent to work correctly with any input source (Text Input, API, etc.)
+        without requiring Chat Input or Message Normalizer components.
+        """
+        if not hasattr(self, "input_value") or self.input_value is None:
+            return
+
+        # Check if message already has an ID (already stored)
+        if getattr(self.input_value, "id", None):
+            return
+
+        # Prepare message with required fields
+        message = self.input_value
+        if not isinstance(message, Message):
+            message = Message(text=str(message))
+
+        # Set session_id if not present
+        if not message.session_id and hasattr(self, "graph"):
+            message.session_id = self.graph.session_id
+
+        # Set context_id if not present
+        if not message.context_id:
+            message.context_id = self.context_id or ""
+
+        # Set sender fields for user message
+        if not message.sender:
+            message.sender = "User"
+        if not message.sender_name:
+            message.sender_name = "User"
+
+        # Store the message directly using astore_message
+        if message.session_id:
+            flow_id = str(self.graph.flow_id) if hasattr(self, "graph") and self.graph.flow_id else None
+            stored_messages = await astore_message(message, flow_id=flow_id)
+            if stored_messages:
+                stored_message = stored_messages[0]
+                # Update input_value with stored message (including ID)
+                self.input_value = await Message.create(**stored_message.model_dump())
+
     async def get_memory_data(self):
         # TODO: This is a temporary fix to avoid message duplication. We should develop a function for this.
-        messages = (
-            await MemoryComponent(**self.get_base_args())
-            .set(
-                session_id=self.graph.session_id,
-                context_id=self.context_id,
-                order="Ascending",
-                n_messages=self.n_messages,
-            )
-            .retrieve_messages()
-        )
+        memory_component = MemoryComponent(**self.get_base_args())
+        # Get external memory if connected, otherwise use internal
+        external_memory = getattr(self, "memory", None) if hasattr(self, "memory") and self.memory else None
+        messages = await memory_component.set(
+            session_id=self.graph.session_id,
+            context_id=self.context_id,
+            order="Ascending",
+            n_messages=self.n_messages,
+            memory=external_memory,
+        ).retrieve_messages()
         return [
             message for message in messages if getattr(message, "id", None) != getattr(self.input_value, "id", None)
         ]
