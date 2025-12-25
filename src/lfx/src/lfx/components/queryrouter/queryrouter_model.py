@@ -1,3 +1,5 @@
+import json
+
 import httpx
 from pydantic.v1 import SecretStr
 
@@ -26,7 +28,7 @@ class QueryRouterModelComponent(LCModelComponent):
             name="api_key",
             display_name="QueryRouter API Key",
             required=True,
-            value="QUERYROUTER_API_KEY",
+            value="",
         ),
         DropdownInput(
             name="model_name",
@@ -63,7 +65,7 @@ class QueryRouterModelComponent(LCModelComponent):
             headers = {}
             if self.api_key:
                 if isinstance(self.api_key, SecretStr):
-                    api_key_value = SecretStr(self.api_key).get_secret_value()
+                    api_key_value = self.api_key.get_secret_value()
                 else:
                     api_key_value = str(self.api_key)
                 headers["Authorization"] = f"Bearer {api_key_value}"
@@ -99,7 +101,7 @@ class QueryRouterModelComponent(LCModelComponent):
                 )
 
             return sorted(result, key=lambda x: x["name"])
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        except (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError) as e:
             self.log(f"Error fetching models: {e}")
             return []
 
@@ -142,13 +144,14 @@ class QueryRouterModelComponent(LCModelComponent):
         if not self.api_key:
             msg = "API key is required"
             raise ValueError(msg)
-        if not self.model_name or self.model_name == "Loading...":
+        if not self.model_name or self.model_name in ("Loading...", "Failed to load models"):
             msg = "Please select a model"
             raise ValueError(msg)
 
+        api_key_value = self.api_key.get_secret_value() if isinstance(self.api_key, SecretStr) else str(self.api_key)
         kwargs = {
             "model": self.model_name,
-            "openai_api_key": SecretStr(self.api_key).get_secret_value(),
+            "openai_api_key": api_key_value,
             "openai_api_base": "https://api.queryrouter.ru/v1",
             "temperature": self.temperature if self.temperature is not None else 0.7,
         }

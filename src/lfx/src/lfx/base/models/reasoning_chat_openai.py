@@ -40,6 +40,9 @@ def _convert_message_to_dict_with_reasoning(message: BaseMessage) -> dict:
                 formatted_content.append({"type": "text", "text": item})
             elif isinstance(item, dict):
                 formatted_content.append(item)
+            else:
+                # Convert unknown types to text to avoid silent data loss
+                formatted_content.append({"type": "text", "text": str(item)})
         formatted_content = formatted_content if formatted_content else ""
     else:
         formatted_content = content
@@ -57,31 +60,30 @@ def _convert_message_to_dict_with_reasoning(message: BaseMessage) -> dict:
     elif isinstance(message, AIMessage):
         message_dict["role"] = "assistant"
 
-        # Handle tool calls
+        # Handle tool calls (ToolCall and InvalidToolCall are TypedDicts)
         if message.tool_calls or message.invalid_tool_calls:
             message_dict["tool_calls"] = []
             for tc in message.tool_calls:
+                tc_args = tc.get("args", {})
                 tool_call_dict = {
-                    "id": tc.get("id", ""),
+                    "id": tc.get("id", "") or "",
                     "type": "function",
                     "function": {
                         "name": tc.get("name", ""),
-                        "arguments": tc.get("args", {}),
+                        "arguments": json.dumps(tc_args) if isinstance(tc_args, dict) else str(tc_args),
                     },
                 }
-                # Convert args to JSON string if it's a dict
-                if isinstance(tool_call_dict["function"]["arguments"], dict):
-                    tool_call_dict["function"]["arguments"] = json.dumps(tool_call_dict["function"]["arguments"])
                 message_dict["tool_calls"].append(tool_call_dict)
 
             for tc in message.invalid_tool_calls:
+                # InvalidToolCall has args as Optional[str], not dict
                 message_dict["tool_calls"].append(
                     {
-                        "id": tc.get("id", ""),
+                        "id": tc.get("id", "") or "",
                         "type": "function",
                         "function": {
-                            "name": tc.get("name", ""),
-                            "arguments": tc.get("args", ""),
+                            "name": tc.get("name", "") or "",
+                            "arguments": tc.get("args", "") or "",
                         },
                     }
                 )
@@ -197,7 +199,8 @@ class ReasoningChatOpenAI(ChatOpenAI):
         stop: list[str] | None,
     ) -> tuple[list[dict], dict]:
         """Override to use custom message conversion that preserves reasoning_details."""
-        params = self._default_params
+        # Copy default params to avoid mutating the original dict
+        params = {**self._default_params}
         if stop is not None:
             params["stop"] = stop
 

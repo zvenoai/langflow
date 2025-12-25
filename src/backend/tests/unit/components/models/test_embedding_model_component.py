@@ -31,6 +31,7 @@ class TestEmbeddingModelComponent(ComponentTestBaseWithClient):
     @pytest.fixture
     def file_names_mapping(self):
         """Return the file names mapping for version-specific files."""
+        return {}
 
     @patch.object(EmbeddingModelComponent, "_fetch_queryrouter_embedding_models")
     async def test_update_build_config_queryrouter(self, mock_fetch_models, component_class, default_kwargs):
@@ -47,7 +48,7 @@ class TestEmbeddingModelComponent(ComponentTestBaseWithClient):
         assert updated_config["model"]["options"] == mock_models
         assert updated_config["model"]["value"] == mock_models[0]
         assert updated_config["api_key"]["display_name"] == "QueryRouter API Key"
-        assert updated_config["api_key"]["value"] == "QUERYROUTER_API_KEY"
+        assert updated_config["api_key"]["value"] == ""
         assert updated_config["api_key"]["required"] is True
         assert updated_config["api_key"]["show"] is True
         assert updated_config["api_base"]["display_name"] == "QueryRouter API Base URL"
@@ -130,7 +131,9 @@ class TestEmbeddingModelComponent(ComponentTestBaseWithClient):
             max_retries=3,
             timeout=None,
             show_progress_bar=False,
-            model_kwargs={},
+            model_kwargs={"encoding_format": "float"},
+            tiktoken_enabled=False,
+            check_embedding_ctx_length=False,
         )
         assert embeddings == mock_instance
 

@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import httpx
@@ -61,7 +62,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
             name="api_key",
             display_name="QueryRouter API Key",
             info="Model Provider API key",
-            value="QUERYROUTER_API_KEY",
+            value="",
             required=True,
             show=True,
             real_time_refresh=True,
@@ -119,7 +120,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
                     result.append(model_id)
 
             return sorted(result)
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        except (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError) as e:
             self.log(f"Error fetching QueryRouter embedding models: {e}")
             return []
 
@@ -231,7 +232,7 @@ class EmbeddingModelComponent(LCEmbeddingsModel):
                 build_config["model"]["options"] = models if models else []
                 build_config["model"]["value"] = models[0] if models else ""
                 build_config["api_key"]["display_name"] = "QueryRouter API Key"
-                build_config["api_key"]["value"] = "QUERYROUTER_API_KEY"
+                build_config["api_key"]["value"] = ""
                 build_config["api_key"]["required"] = True
                 build_config["api_key"]["show"] = True
                 build_config["api_base"]["display_name"] = "QueryRouter API Base URL"

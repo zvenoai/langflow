@@ -85,8 +85,8 @@ class QdrantVectorStoreComponent(LCVectorStoreComponent):
             server_kwargs["url"] = self.url
         else:
             server_kwargs["host"] = self.host or None
-            server_kwargs["port"] = int(self.port)
-            server_kwargs["grpc_port"] = int(self.grpc_port)
+            server_kwargs["port"] = int(self.port) if self.port is not None else 6333
+            server_kwargs["grpc_port"] = int(self.grpc_port) if self.grpc_port is not None else 6334
 
         server_kwargs = {k: v for k, v in server_kwargs.items() if v is not None}
 

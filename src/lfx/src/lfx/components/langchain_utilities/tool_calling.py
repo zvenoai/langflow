@@ -63,20 +63,6 @@ def _create_tool_message_with_reasoning(agent_action: ToolAgentAction, observati
     )
 
 
-def _ensure_ai_message_has_reasoning(ai_message: AIMessage) -> AIMessage:
-    """Ensure AIMessage has reasoning_details properly set in additional_kwargs.
-
-    This ensures that when the message is passed back through the agent loop,
-    the reasoning_details are preserved for OpenRouter/Gemini compatibility.
-    """
-    # If the message already has reasoning_details, return as-is
-    if ai_message.additional_kwargs.get("reasoning_details"):
-        return ai_message
-
-    # Otherwise, return the original message
-    return ai_message
-
-
 def format_to_tool_messages_with_reasoning(
     intermediate_steps: Sequence[tuple[AgentAction, str]],
 ) -> list[BaseMessage]:
@@ -91,19 +77,12 @@ def format_to_tool_messages_with_reasoning(
     messages: list[BaseMessage] = []
     for agent_action, observation in intermediate_steps:
         if isinstance(agent_action, ToolAgentAction):
-            # Process message_log to ensure reasoning is preserved
-            processed_messages = []
-            for msg in agent_action.message_log:
-                if isinstance(msg, AIMessage):
-                    processed_messages.append(_ensure_ai_message_has_reasoning(msg))
-                else:
-                    processed_messages.append(msg)
-
-            # Create tool message with reasoning preserved
+            # Create tool message with reasoning preserved from the original AI message
             tool_message = _create_tool_message_with_reasoning(agent_action, observation)
 
-            # Combine AI messages with tool response
-            new_messages = [*processed_messages, tool_message]
+            # Combine original AI messages from message_log with tool response
+            # message_log can be None, so use fallback to empty list
+            new_messages = [*(agent_action.message_log or []), tool_message]
             messages.extend([new for new in new_messages if new not in messages])
         else:
             messages.append(AIMessage(content=agent_action.log))
