@@ -1,5 +1,6 @@
 from langchain.embeddings.base import Embeddings
 from langchain_community.vectorstores import Qdrant
+from pydantic.v1 import SecretStr
 
 from lfx.base.vectorstores.model import LCVectorStoreComponent, check_cached_vector_store
 from lfx.helpers.data import docs_to_data
@@ -20,14 +21,25 @@ class QdrantVectorStoreComponent(LCVectorStoreComponent):
 
     inputs = [
         StrInput(name="collection_name", display_name="Collection Name", required=True),
-        StrInput(name="host", display_name="Host", value="localhost", advanced=True),
+        StrInput(
+            name="url",
+            display_name="URL",
+            info="Full URL for Qdrant Cloud (e.g., https://xxx.cloud.qdrant.io:6333). "
+            "If provided, host/port are ignored.",
+        ),
+        SecretStrInput(name="api_key", display_name="Qdrant API Key"),
+        StrInput(
+            name="host",
+            display_name="Host",
+            value="localhost",
+            advanced=True,
+            info="For local Qdrant. Ignored if URL is provided.",
+        ),
         IntInput(name="port", display_name="Port", value=6333, advanced=True),
         IntInput(name="grpc_port", display_name="gRPC Port", value=6334, advanced=True),
-        SecretStrInput(name="api_key", display_name="Qdrant API Key", advanced=True),
         StrInput(name="prefix", display_name="Prefix", advanced=True),
         IntInput(name="timeout", display_name="Timeout", advanced=True),
         StrInput(name="path", display_name="Path", advanced=True),
-        StrInput(name="url", display_name="URL", advanced=True),
         DropdownInput(
             name="distance_func",
             display_name="Distance Function",
@@ -56,21 +68,28 @@ class QdrantVectorStoreComponent(LCVectorStoreComponent):
             "metadata_payload_key": self.metadata_payload_key,
         }
 
+        api_key_value = None
+        if self.api_key:
+            api_key_value = (
+                self.api_key.get_secret_value() if isinstance(self.api_key, SecretStr) else str(self.api_key)
+            )
+
         server_kwargs = {
-            "host": self.host or None,
-            "port": int(self.port),  # Ensure port is an integer
-            "grpc_port": int(self.grpc_port),  # Ensure grpc_port is an integer
-            "api_key": self.api_key,
-            "prefix": self.prefix,
-            # Ensure timeout is an integer
+            "api_key": api_key_value,
+            "prefix": self.prefix or None,
             "timeout": int(self.timeout) if self.timeout else None,
             "path": self.path or None,
-            "url": self.url or None,
         }
+
+        if self.url:
+            server_kwargs["url"] = self.url
+        else:
+            server_kwargs["host"] = self.host or None
+            server_kwargs["port"] = int(self.port) if self.port is not None else 6333
+            server_kwargs["grpc_port"] = int(self.grpc_port) if self.grpc_port is not None else 6334
 
         server_kwargs = {k: v for k, v in server_kwargs.items() if v is not None}
 
-        # Convert DataFrame to Data if needed using parent's method
         self.ingest_data = self._prepare_ingest_data()
 
         documents = []

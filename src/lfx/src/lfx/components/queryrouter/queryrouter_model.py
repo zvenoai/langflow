@@ -1,15 +1,21 @@
+import json
+
 import httpx
-from langchain_openai import ChatOpenAI
 from pydantic.v1 import SecretStr
 
 from lfx.base.models.model import LCModelComponent
+from lfx.base.models.reasoning_chat_openai import ReasoningChatOpenAI
 from lfx.field_typing import LanguageModel
 from lfx.field_typing.range_spec import RangeSpec
 from lfx.inputs.inputs import DropdownInput, IntInput, SecretStrInput, SliderInput
 
 
 class QueryRouterModelComponent(LCModelComponent):
-    """QueryRouter API component for language models."""
+    """QueryRouter API component for language models.
+
+    This component uses ReasoningChatOpenAI which properly preserves reasoning_details
+    for compatibility with Gemini models via OpenRouter when using tool calling.
+    """
 
     display_name = "QueryRouter"
     description = "QueryRouter provides unified access to multiple AI models through an OpenAI-compatible API."
@@ -22,7 +28,7 @@ class QueryRouterModelComponent(LCModelComponent):
             name="api_key",
             display_name="QueryRouter API Key",
             required=True,
-            value="QUERYROUTER_API_KEY",
+            value="",
         ),
         DropdownInput(
             name="model_name",
@@ -54,11 +60,12 @@ class QueryRouterModelComponent(LCModelComponent):
         Each model dict contains: slug, name, context_length, vendor, price info, etc.
         """
         try:
-            # Prepare headers with API key if available (API doesn't require auth, but we include it for future compatibility)
+            # Prepare headers with API key if available.
+            # API doesn't require auth, but we include it for future compatibility.
             headers = {}
             if self.api_key:
                 if isinstance(self.api_key, SecretStr):
-                    api_key_value = SecretStr(self.api_key).get_secret_value()
+                    api_key_value = self.api_key.get_secret_value()
                 else:
                     api_key_value = str(self.api_key)
                 headers["Authorization"] = f"Bearer {api_key_value}"
@@ -94,7 +101,7 @@ class QueryRouterModelComponent(LCModelComponent):
                 )
 
             return sorted(result, key=lambda x: x["name"])
-        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+        except (httpx.RequestError, httpx.HTTPStatusError, json.JSONDecodeError) as e:
             self.log(f"Error fetching models: {e}")
             return []
 
@@ -129,17 +136,22 @@ class QueryRouterModelComponent(LCModelComponent):
         return build_config
 
     def build_model(self) -> LanguageModel:
-        """Build the QueryRouter model."""
+        """Build the QueryRouter model.
+
+        Uses ReasoningChatOpenAI which preserves reasoning_details for compatibility
+        with Gemini models when using tool calling via agents.
+        """
         if not self.api_key:
             msg = "API key is required"
             raise ValueError(msg)
-        if not self.model_name or self.model_name == "Loading...":
+        if not self.model_name or self.model_name in ("Loading...", "Failed to load models"):
             msg = "Please select a model"
             raise ValueError(msg)
 
+        api_key_value = self.api_key.get_secret_value() if isinstance(self.api_key, SecretStr) else str(self.api_key)
         kwargs = {
             "model": self.model_name,
-            "openai_api_key": SecretStr(self.api_key).get_secret_value(),
+            "openai_api_key": api_key_value,
             "openai_api_base": "https://api.queryrouter.ru/v1",
             "temperature": self.temperature if self.temperature is not None else 0.7,
         }
@@ -147,4 +159,4 @@ class QueryRouterModelComponent(LCModelComponent):
         if self.max_tokens:
             kwargs["max_tokens"] = int(self.max_tokens)
 
-        return ChatOpenAI(**kwargs)
+        return ReasoningChatOpenAI(**kwargs)
