@@ -214,6 +214,11 @@ codespell: ## run codespell to check spelling
 fix_codespell: ## run codespell to fix spelling errors
 	@uvx codespell --toml pyproject.toml --write
 
+update_secrets_baseline: ## update .secrets.baseline file for detect-secrets
+	@echo 'Updating secrets baseline...'
+	@uvx detect-secrets scan --baseline .secrets.baseline
+	@echo "$(GREEN)Secrets baseline updated.$(NC)"
+
 format_backend: ## backend code formatters
 	@uv run ruff check . --fix
 	@uv run ruff format .
