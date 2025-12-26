@@ -632,6 +632,47 @@ Return types:
 - Data(data={...}) for structured data
 
 ═══════════════════════════════════════════════════════════════════════════════
+COMPONENT TOOL MODE
+═══════════════════════════════════════════════════════════════════════════════
+
+Components can be used in TOOL MODE, which allows agents to use them as tools.
+
+When a component is in tool mode:
+- The agent can see and use tools (fields) that have tool_mode=True
+- Fields with tool_mode=True are NOT visible or editable by users in the UI
+- The component exposes its functionality as a tool that agents can call
+
+Example - Component with tool_mode fields:
+```python
+inputs = [
+    MessageTextInput(
+        name="chat_id",
+        display_name="Chat ID",
+        tool_mode=True,  # Available to agent, hidden from user
+    ),
+    MessageTextInput(
+        name="message_text",
+        display_name="Message Text",
+        tool_mode=True,  # Available to agent, hidden from user
+    ),
+    MessageTextInput(
+        name="parse_mode",
+        display_name="Parse Mode",
+        tool_mode=False,  # Available to user, NOT available to agent in tool_mode
+    ),
+]
+```
+
+IMPORTANT RULES:
+1. Fields with tool_mode=True are ONLY visible to agents when the component is used as a tool
+2. Fields with tool_mode=True are NOT editable by users in the UI
+3. If you need a field to be available to users but NOT to agents in tool_mode:
+   - Remove tool_mode=True from the field initialization (or set tool_mode=False)
+   - The field will be visible to users but won't appear in the tool schema for agents
+4. When creating components that will be used as tools, mark agent-accessible fields with tool_mode=True
+5. User-configurable fields (like API keys, settings) should NOT have tool_mode=True
+
+═══════════════════════════════════════════════════════════════════════════════
 COMMON COMPONENTS REFERENCE
 ═══════════════════════════════════════════════════════════════════════════════
 
