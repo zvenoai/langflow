@@ -10,8 +10,49 @@ See: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens#preservin
 import json
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessage
-from langchain_openai import ChatOpenAI
+# Monkey-patch BEFORE importing ChatOpenAI
+import langchain_openai.chat_models.base as base_module
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, BaseMessageChunk
+
+# Save original functions
+_original_convert_dict_to_message = base_module._convert_dict_to_message  # noqa: SLF001
+_original_convert_delta_to_message_chunk = base_module._convert_delta_to_message_chunk  # noqa: SLF001
+
+
+def _patched_convert_dict_to_message(_dict: dict) -> BaseMessage:
+    """Patched version that preserves reasoning_details in additional_kwargs."""
+    message = _original_convert_dict_to_message(_dict)
+
+    # If it's an AIMessage and the dict has reasoning_details or reasoning, preserve them
+    if isinstance(message, AIMessage):
+        if "reasoning_details" in _dict:
+            message.additional_kwargs["reasoning_details"] = _dict["reasoning_details"]
+        if "reasoning" in _dict:
+            message.additional_kwargs["reasoning"] = _dict["reasoning"]
+
+    return message
+
+
+def _patched_convert_delta_to_message_chunk(_dict: dict, default_class: type[BaseMessageChunk]) -> BaseMessageChunk:
+    """Patched version that preserves reasoning_details in streaming chunks."""
+    message_chunk = _original_convert_delta_to_message_chunk(_dict, default_class)
+
+    # If it's an AIMessageChunk and the dict has reasoning_details or reasoning, preserve them
+    if isinstance(message_chunk, AIMessageChunk):
+        if "reasoning_details" in _dict:
+            message_chunk.additional_kwargs["reasoning_details"] = _dict["reasoning_details"]
+        if "reasoning" in _dict:
+            message_chunk.additional_kwargs["reasoning"] = _dict["reasoning"]
+
+    return message_chunk
+
+
+# Apply both monkey patches
+base_module._convert_dict_to_message = _patched_convert_dict_to_message  # noqa: SLF001
+base_module._convert_delta_to_message_chunk = _patched_convert_delta_to_message_chunk  # noqa: SLF001
+
+# NOW import ChatOpenAI after the patches are applied
+from langchain_openai import ChatOpenAI  # noqa: E402
 
 
 def _convert_message_to_dict_with_reasoning(message: BaseMessage) -> dict:
@@ -193,20 +234,31 @@ class ReasoningChatOpenAI(ChatOpenAI):
         )
     """
 
-    def _create_message_dicts(
+    def _get_request_payload(
         self,
-        messages: list[BaseMessage],
-        stop: list[str] | None,
-    ) -> tuple[list[dict], dict]:
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
         """Override to use custom message conversion that preserves reasoning_details."""
-        # Copy default params to avoid mutating the original dict
-        params = {**self._default_params}
-        if stop is not None:
-            params["stop"] = stop
+        messages = self._convert_input(input_).to_messages()
 
-        # Use our custom conversion that preserves reasoning_details
-        message_dicts = [_convert_message_to_dict_with_reasoning(m) for m in messages]
-        return message_dicts, params
+        if stop is not None:
+            kwargs["stop"] = stop
+
+        payload = {**self._default_params, **kwargs}
+
+        if self._use_responses_api(payload):
+            # Use default responses API payload construction
+            from langchain_openai.chat_models.base import _construct_responses_api_payload
+
+            payload = _construct_responses_api_payload(messages, payload)
+        else:
+            # Use our custom conversion that preserves reasoning_details
+            payload["messages"] = [_convert_message_to_dict_with_reasoning(m) for m in messages]
+
+        return payload
 
     def _create_chat_result(
         self,

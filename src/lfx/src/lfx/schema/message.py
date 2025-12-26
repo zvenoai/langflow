@@ -151,7 +151,15 @@ class Message(Data):
                 human_message = HumanMessage(content=text)
             return human_message
 
-        return AIMessage(content=text)
+        # Restore additional_kwargs (including reasoning_details) for OpenRouter/Gemini compatibility
+        additional_kwargs = {}
+        if hasattr(self, "data") and isinstance(self.data, dict):
+            # Preserve reasoning_details and other API-specific fields
+            for key in ["reasoning_details", "reasoning", "tool_calls"]:
+                if key in self.data:
+                    additional_kwargs[key] = self.data[key]
+
+        return AIMessage(content=text, additional_kwargs=additional_kwargs or {})
 
     @classmethod
     def from_lc_message(cls, lc_message: BaseMessage) -> Message:
@@ -171,7 +179,14 @@ class Message(Data):
             sender = lc_message.type
             sender_name = lc_message.type
 
-        return cls(text=lc_message.content, sender=sender, sender_name=sender_name)
+        message = cls(text=lc_message.content, sender=sender, sender_name=sender_name)
+
+        # Preserve additional_kwargs (including reasoning_details) for OpenRouter/Gemini compatibility
+        if hasattr(lc_message, "additional_kwargs") and lc_message.additional_kwargs:
+            for key, value in lc_message.additional_kwargs.items():
+                message.data[key] = value
+
+        return message
 
     @classmethod
     def from_data(cls, data: Data) -> Message:
