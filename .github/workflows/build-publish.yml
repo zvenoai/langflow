@@ -121,7 +121,7 @@ jobs:
           file: ./docker/build_and_push.Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ steps.owner.outputs.lowercase }}/langflow:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.lowercase }}/langflow:${{ github.sha }}-dev
             ${{ env.REGISTRY }}/${{ steps.owner.outputs.lowercase }}/langflow:dev
           build-args: |
             FRONTEND_PREBUILT=1
